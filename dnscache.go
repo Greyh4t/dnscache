@@ -3,11 +3,18 @@ package dnscache
 // Package dnscache caches DNS lookups
 
 import (
+	"encoding/gob"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+func init() {
+	gob.Register(map[string][]net.IP{})
+	gob.Register(map[string]string{})
+}
 
 type Value struct {
 	ips         []net.IP
@@ -65,12 +72,11 @@ func (r *Resolver) Lookup(address string) ([]net.IP, error) {
 	if err != nil {
 		return nil, err
 	}
-	value := &Value{
+	r.cache.Store(address, &Value{
 		ips:         ips,
 		lastUpdated: time.Now(),
 		lastUsed:    time.Now(),
-	}
-	r.cache.Store(address, value)
+	})
 	return ips, nil
 }
 
@@ -111,6 +117,49 @@ func (r *Resolver) Flush() {
 	})
 	r.hitCount = 0
 	r.missCount = 0
+}
+
+func (r *Resolver) Dump(file string) error {
+	var cache = map[string][]net.IP{}
+	r.cache.Range(func(address, value interface{}) bool {
+		cache[address.(string)] = value.(*Value).ips
+		return true
+	})
+
+	f, err := os.OpenFile(file, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	gob.Register(map[string][]net.IP{})
+	enc := gob.NewEncoder(f)
+	return enc.Encode(cache)
+}
+
+func (r *Resolver) Load(file string) error {
+	f, err := os.Open(file)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var cache = map[string][]net.IP{}
+	gob.Register(map[string][]net.IP{})
+	dec := gob.NewDecoder(f)
+	err = dec.Decode(&cache)
+	if err != nil {
+		return err
+	}
+
+	for address, ips := range cache {
+		r.cache.Store(address, &Value{
+			ips:         ips,
+			lastUpdated: time.Now(),
+			lastUsed:    time.Now(),
+		})
+	}
+	return nil
 }
 
 func (r *Resolver) Stop() {
