@@ -11,11 +11,6 @@ import (
 	"time"
 )
 
-func init() {
-	gob.Register(map[string][]net.IP{})
-	gob.Register(map[string]string{})
-}
-
 type Value struct {
 	ips         []net.IP
 	lastUsed    time.Time
