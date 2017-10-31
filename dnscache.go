@@ -64,15 +64,12 @@ func (r *Resolver) FetchOneString(address string) (string, error) {
 
 func (r *Resolver) Lookup(address string) ([]net.IP, error) {
 	ips, err := net.LookupIP(address)
-	if err != nil {
-		return nil, err
-	}
 	r.cache.Store(address, &Value{
 		ips:         ips,
 		lastUpdated: time.Now(),
 		lastUsed:    time.Now(),
 	})
-	return ips, nil
+	return ips, err
 }
 
 func (r *Resolver) Refresh() {
@@ -81,7 +78,7 @@ func (r *Resolver) Refresh() {
 			r.cache.Delete(address)
 		} else if time.Now().Sub(value.(*Value).lastUpdated) > r.ttl {
 			r.Lookup(address.(string))
-			time.Sleep(time.Millisecond * 2)
+			time.Sleep(time.Millisecond * 5)
 		}
 		return true
 	})
