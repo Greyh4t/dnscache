@@ -39,10 +39,10 @@ func (r *Resolver) Fetch(address string) ([]net.IP, error) {
 	if ok {
 		value := v.(*Value)
 		value.lastUsed = time.Now()
-		r.hitCount = atomic.AddUint64(&r.hitCount, 1)
+		atomic.AddUint64(&r.hitCount, 1)
 		return value.ips, nil
 	}
-	r.missCount = atomic.AddUint64(&r.missCount, 1)
+	atomic.AddUint64(&r.missCount, 1)
 	return r.Lookup(address)
 }
 
