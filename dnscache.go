@@ -22,7 +22,7 @@ type Resolver struct {
 	ttl       time.Duration
 	hitCount  uint64
 	missCount uint64
-	stop      bool
+	closed    bool
 }
 
 func New(ttl time.Duration) *Resolver {
@@ -32,6 +32,18 @@ func New(ttl time.Duration) *Resolver {
 		go resolver.autoRefresh()
 	}
 	return resolver
+}
+
+func (r *Resolver) Set(address string, ips []net.IP) {
+	r.cache.Store(address, &Value{
+		ips:         ips,
+		lastUpdated: time.Now(),
+		lastUsed:    time.Now(),
+	})
+}
+
+func (r *Resolver) Remove(address string) {
+	r.cache.Delete(address)
 }
 
 func (r *Resolver) Fetch(address string) ([]net.IP, error) {
@@ -48,7 +60,7 @@ func (r *Resolver) Fetch(address string) ([]net.IP, error) {
 
 func (r *Resolver) FetchOne(address string) (net.IP, error) {
 	ips, err := r.Fetch(address)
-	if err != nil || len(ips) == 0 {
+	if err != nil {
 		return nil, err
 	}
 	return ips[0], nil
@@ -56,7 +68,7 @@ func (r *Resolver) FetchOne(address string) (net.IP, error) {
 
 func (r *Resolver) FetchOneString(address string) (string, error) {
 	ip, err := r.FetchOne(address)
-	if err != nil || ip == nil {
+	if err != nil {
 		return "", err
 	}
 	return ip.String(), nil
@@ -64,12 +76,11 @@ func (r *Resolver) FetchOneString(address string) (string, error) {
 
 func (r *Resolver) Lookup(address string) ([]net.IP, error) {
 	ips, err := net.LookupIP(address)
-	r.cache.Store(address, &Value{
-		ips:         ips,
-		lastUpdated: time.Now(),
-		lastUsed:    time.Now(),
-	})
-	return ips, err
+	if err != nil {
+		return nil, err
+	}
+	r.Set(address, ips)
+	return ips, nil
 }
 
 func (r *Resolver) Refresh() {
@@ -86,7 +97,7 @@ func (r *Resolver) Refresh() {
 
 func (r *Resolver) autoRefresh() {
 	for {
-		if r.stop {
+		if r.closed {
 			return
 		}
 		r.Refresh()
@@ -145,15 +156,12 @@ func (r *Resolver) Load(file string) error {
 	}
 
 	for address, ips := range cache {
-		r.cache.Store(address, &Value{
-			ips:         ips,
-			lastUpdated: time.Now(),
-			lastUsed:    time.Now(),
-		})
+		r.Set(address, ips)
 	}
 	return nil
 }
 
-func (r *Resolver) Stop() {
-	r.stop = true
+func (r *Resolver) Close() {
+	r.closed = true
+	r.Flush()
 }
