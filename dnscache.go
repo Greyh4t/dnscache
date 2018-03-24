@@ -68,6 +68,12 @@ func (r *Resolver) FetchOne(address string) (net.IP, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 确保返回的是ipv4地址
+	for _, ip := range ips {
+		if ip.To4() != nil {
+			return ip, nil
+		}
+	}
 	return ips[0], nil
 }
 
