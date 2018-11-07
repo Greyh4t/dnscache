@@ -12,9 +12,8 @@ import (
 )
 
 type Value struct {
-	ips         []net.IP
-	lastUsed    time.Time
-	lastUpdated time.Time
+	ips     []net.IP
+	updated time.Time
 }
 
 type Resolver struct {
@@ -27,21 +26,20 @@ type Resolver struct {
 
 func New(ttl time.Duration) *Resolver {
 	resolver := new(Resolver)
-	if ttl < time.Second {
-		ttl = time.Second
+	if ttl <= 0 {
+		ttl = 60 * time.Second
 	}
 	resolver.ttl = ttl
-	if ttl > 0 {
-		go resolver.autoRefresh()
-	}
+
+	go resolver.autoRefresh()
+
 	return resolver
 }
 
 func (r *Resolver) Set(address string, ips []net.IP) {
 	r.cache.Store(address, &Value{
-		ips:         ips,
-		lastUpdated: time.Now(),
-		lastUsed:    time.Now(),
+		ips:     ips,
+		updated: time.Now(),
 	})
 }
 
@@ -53,8 +51,7 @@ func (r *Resolver) Fetch(address string) ([]net.IP, error) {
 	v, ok := r.cache.Load(address)
 	if ok {
 		value := v.(*Value)
-		if time.Now().Sub(value.lastUpdated) < r.ttl {
-			value.lastUsed = time.Now()
+		if time.Now().Sub(value.updated) < r.ttl {
 			atomic.AddUint64(&r.hitCount, 1)
 			return value.ips, nil
 		}
@@ -96,7 +93,7 @@ func (r *Resolver) Lookup(address string) ([]net.IP, error) {
 
 func (r *Resolver) Refresh() {
 	r.cache.Range(func(address, value interface{}) bool {
-		if time.Now().Sub(value.(*Value).lastUsed) > r.ttl {
+		if time.Now().Sub(value.(*Value).updated) >= r.ttl {
 			r.cache.Delete(address)
 		}
 		return true
