@@ -51,7 +51,7 @@ func (r *Resolver) Fetch(address string) ([]net.IP, error) {
 	v, ok := r.cache.Load(address)
 	if ok {
 		value := v.(*Value)
-		if time.Now().Sub(value.updated) < r.ttl {
+		if time.Now().Sub(value.updated) <= r.ttl {
 			atomic.AddUint64(&r.hitCount, 1)
 			return value.ips, nil
 		}
@@ -93,7 +93,7 @@ func (r *Resolver) Lookup(address string) ([]net.IP, error) {
 
 func (r *Resolver) Refresh() {
 	r.cache.Range(func(address, value interface{}) bool {
-		if time.Now().Sub(value.(*Value).updated) >= r.ttl {
+		if time.Now().Sub(value.(*Value).updated) > r.ttl {
 			r.cache.Delete(address)
 		}
 		return true
