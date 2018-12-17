@@ -54,6 +54,8 @@ func (r *Resolver) Fetch(address string) ([]net.IP, error) {
 		if time.Now().Sub(value.updated) <= r.ttl {
 			atomic.AddUint64(&r.hitCount, 1)
 			return value.ips, nil
+		} else {
+			r.cache.Delete(address)
 		}
 	}
 	atomic.AddUint64(&r.missCount, 1)
