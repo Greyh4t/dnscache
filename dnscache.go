@@ -3,7 +3,9 @@ package dnscache
 // Package dnscache caches DNS lookups
 
 import (
+	"context"
 	"encoding/gob"
+	"errors"
 	"net"
 	"os"
 	"sync"
@@ -12,6 +14,7 @@ import (
 )
 
 type Value struct {
+	err     error
 	ips     []net.IP
 	updated time.Time
 }
@@ -22,6 +25,7 @@ type Resolver struct {
 	hitCount  uint64
 	missCount uint64
 	closed    bool
+	server    *net.Resolver
 }
 
 func New(ttl time.Duration) *Resolver {
@@ -36,8 +40,29 @@ func New(ttl time.Duration) *Resolver {
 	return resolver
 }
 
-func (r *Resolver) Set(address string, ips []net.IP) {
+func NewCustomServer(ttl time.Duration, dnsServer string) *Resolver {
+	resolver := new(Resolver)
+	if ttl <= 0 {
+		ttl = 60 * time.Second
+	}
+	resolver.ttl = ttl
+
+	resolver.server = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{}
+			return d.DialContext(ctx, network, dnsServer)
+		},
+	}
+
+	go resolver.autoRefresh()
+
+	return resolver
+}
+
+func (r *Resolver) Set(address string, ips []net.IP, err error) {
 	r.cache.Store(address, &Value{
+		err:     err,
 		ips:     ips,
 		updated: time.Now(),
 	})
@@ -53,6 +78,9 @@ func (r *Resolver) Fetch(address string) ([]net.IP, error) {
 		value := v.(*Value)
 		if time.Now().Sub(value.updated) <= r.ttl {
 			atomic.AddUint64(&r.hitCount, 1)
+			if value.err != nil {
+				return nil, value.err
+			}
 			return value.ips, nil
 		} else {
 			r.cache.Delete(address)
@@ -73,7 +101,8 @@ func (r *Resolver) FetchOne(address string) (net.IP, error) {
 			return ip, nil
 		}
 	}
-	return ips[0], nil
+
+	return nil, errors.New("lookup ipv4 address failed")
 }
 
 func (r *Resolver) FetchOneString(address string) (string, error) {
@@ -81,15 +110,33 @@ func (r *Resolver) FetchOneString(address string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	return ip.String(), nil
 }
 
 func (r *Resolver) Lookup(address string) ([]net.IP, error) {
-	ips, err := net.LookupIP(address)
-	if err != nil {
-		return nil, err
+	var ips []net.IP
+	var err error
+
+	if r.server != nil {
+		addrs, err := r.server.LookupIPAddr(context.Background(), address)
+		if err != nil {
+			r.Set(address, ips, err)
+			return nil, err
+		}
+		ips = make([]net.IP, len(addrs))
+		for i, ia := range addrs {
+			ips[i] = ia.IP
+		}
+	} else {
+		ips, err = net.LookupIP(address)
+		if err != nil {
+			r.Set(address, ips, err)
+			return nil, err
+		}
 	}
-	r.Set(address, ips)
+
+	r.Set(address, ips, nil)
 	return ips, nil
 }
 
@@ -121,18 +168,18 @@ func (r *Resolver) HitRate() int {
 }
 
 func (r *Resolver) Flush() {
-	r.cache.Range(func(address, value interface{}) bool {
-		r.cache.Delete(address)
-		return true
-	})
+	r.cache = sync.Map{}
 	r.hitCount = 0
 	r.missCount = 0
 }
 
+// Dump successful cache
 func (r *Resolver) Dump(file string) error {
 	var cache = map[string][]net.IP{}
 	r.cache.Range(func(address, value interface{}) bool {
-		cache[address.(string)] = value.(*Value).ips
+		if value.(*Value).err == nil {
+			cache[address.(string)] = value.(*Value).ips
+		}
 		return true
 	})
 
@@ -163,7 +210,7 @@ func (r *Resolver) Load(file string) error {
 	}
 
 	for address, ips := range cache {
-		r.Set(address, ips)
+		r.Set(address, ips, nil)
 	}
 	return nil
 }
