@@ -26,6 +26,7 @@ The cache is thread safe. Create a new instance by specifying how long each entr
 	ip, _ := resolver.FetchOneString("api.viki.io")
 
 If you need a custom server
+
 	//use 8.8.8.8 as your server
 	resolver := dnscache.NewCustomServer(time.Minute*5, "8.8.8.8:53")
 
