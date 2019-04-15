@@ -25,7 +25,10 @@ The cache is thread safe. Create a new instance by specifying how long each entr
 	//get the first net.IP as string
 	ip, _ := resolver.FetchOneString("api.viki.io")
 
-If you need a custom server
+If you need a custom server.
+Please note that this feature is not available on Windows, https://golang.org/pkg/net/#InterfaceAddrs mentions 
+
+> On Windows, the resolver always uses C library functions, such as GetAddrInfo and DnsQuery.
 
 	//use 8.8.8.8 as your server
 	resolver := dnscache.NewCustomServer(time.Minute*5, "8.8.8.8:53")
