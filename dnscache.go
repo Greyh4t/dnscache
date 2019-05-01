@@ -24,8 +24,9 @@ type Resolver struct {
 	ttl       time.Duration
 	hitCount  uint64
 	missCount uint64
-	closed    bool
+	closed    chan struct{}
 	server    *net.Resolver
+	once      sync.Once
 }
 
 func New(ttl time.Duration) *Resolver {
@@ -34,6 +35,7 @@ func New(ttl time.Duration) *Resolver {
 		ttl = 60 * time.Second
 	}
 	resolver.ttl = ttl
+	resolver.closed = make(chan struct{})
 
 	go resolver.autoRefresh()
 
@@ -150,12 +152,16 @@ func (r *Resolver) Refresh() {
 }
 
 func (r *Resolver) autoRefresh() {
+	ticker := time.NewTicker(time.Second)
+
 	for {
-		if r.closed {
+		select {
+		case <-r.closed:
+			ticker.Stop()
 			return
+		case <-ticker.C:
+			r.Refresh()
 		}
-		r.Refresh()
-		time.Sleep(time.Second)
 	}
 }
 
@@ -216,6 +222,8 @@ func (r *Resolver) Load(file string) error {
 }
 
 func (r *Resolver) Close() {
-	r.closed = true
-	r.Flush()
+	r.once.Do(func() {
+		close(r.closed)
+		r.Flush()
+	})
 }

@@ -46,6 +46,6 @@ If you are using an `http.Transport`, you can use this cache by speficifying a
 			if err != nil {
 				return nil, err
 			}
-			return net.Dial("tcp", net.JoinHostPort(ip, port))
+			return net.Dial(network, net.JoinHostPort(ip, port))
 		},
 	}
