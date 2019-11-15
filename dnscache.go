@@ -48,6 +48,7 @@ func NewCustomServer(ttl time.Duration, dnsServer string) *Resolver {
 		ttl = 60 * time.Second
 	}
 	resolver.ttl = ttl
+	resolver.closed = make(chan struct{})
 
 	resolver.server = &net.Resolver{
 		PreferGo: true,
