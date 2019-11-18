@@ -8,7 +8,7 @@ The Go team's singleflight solution (which isn't in stable yet) is rather elegan
 ### Installation
 Install using the "go get" command:
 
-	go get github.com/Greyh4t/dnscache
+	go get github.com/greyh4t/dnscache
 
 ### Usage
 The cache is thread safe. Create a new instance by specifying how long each entry should be cached (in seconds). Items will be refreshed in the background.
