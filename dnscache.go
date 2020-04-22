@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/gob"
 	"errors"
+	"math/rand"
 	"net"
 	"os"
 	"sync"
@@ -13,44 +14,53 @@ import (
 	"time"
 )
 
-type Value struct {
-	err     error
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
+
+type cachedValue struct {
 	ips     []net.IP
-	updated time.Time
+	updated int64
+	err     error
 }
 
-type Resolver struct {
-	cache     sync.Map
-	ttl       time.Duration
-	hitCount  uint64
-	missCount uint64
-	closed    chan struct{}
-	server    *net.Resolver
-	once      sync.Once
+type Cache struct {
+	cache      sync.Map
+	server     *net.Resolver
+	expiration int64
+	hitCount   uint64
+	missCount  uint64
+
+	closed chan struct{}
+	once   sync.Once
 }
 
-func New(ttl time.Duration) *Resolver {
-	resolver := new(Resolver)
-	if ttl <= 0 {
-		ttl = 60 * time.Second
+func New(expiration time.Duration) *Cache {
+	cache := &Cache{
+		expiration: 60,
+		closed:     make(chan struct{}),
 	}
-	resolver.ttl = ttl
-	resolver.closed = make(chan struct{})
 
-	go resolver.autoRefresh()
+	if int64(expiration.Seconds()) > 0 {
+		cache.expiration = int64(expiration.Seconds())
+	}
 
-	return resolver
+	go cache.runJanitor()
+
+	return cache
 }
 
-func NewCustomServer(ttl time.Duration, dnsServer string) *Resolver {
-	resolver := new(Resolver)
-	if ttl <= 0 {
-		ttl = 60 * time.Second
+func NewWithServer(expiration time.Duration, dnsServer string) *Cache {
+	cache := &Cache{
+		expiration: 60,
+		closed:     make(chan struct{}),
 	}
-	resolver.ttl = ttl
-	resolver.closed = make(chan struct{})
 
-	resolver.server = &net.Resolver{
+	if int64(expiration.Seconds()) > 0 {
+		cache.expiration = int64(expiration.Seconds())
+	}
+
+	cache.server = &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			d := net.Dialer{}
@@ -58,46 +68,64 @@ func NewCustomServer(ttl time.Duration, dnsServer string) *Resolver {
 		},
 	}
 
-	go resolver.autoRefresh()
+	go cache.runJanitor()
 
-	return resolver
+	return cache
 }
 
-func (r *Resolver) Set(address string, ips []net.IP, err error) {
-	r.cache.Store(address, &Value{
+func (c *Cache) Set(address string, ips []net.IP, err error) {
+	c.cache.Store(address, &cachedValue{
 		err:     err,
 		ips:     ips,
-		updated: time.Now(),
+		updated: time.Now().Unix(),
 	})
 }
 
-func (r *Resolver) Remove(address string) {
-	r.cache.Delete(address)
+func (c *Cache) Remove(address string) {
+	c.cache.Delete(address)
 }
 
-func (r *Resolver) Fetch(address string) ([]net.IP, error) {
-	v, ok := r.cache.Load(address)
+func (c *Cache) Fetch(address string) ([]net.IP, error) {
+	v, ok := c.cache.Load(address)
 	if ok {
-		value := v.(*Value)
-		if time.Now().Sub(value.updated) <= r.ttl {
-			atomic.AddUint64(&r.hitCount, 1)
+		value := v.(*cachedValue)
+		if time.Now().Unix()-value.updated <= c.expiration {
+			atomic.AddUint64(&c.hitCount, 1)
 			if value.err != nil {
 				return nil, value.err
 			}
 			return value.ips, nil
-		} else {
-			r.cache.Delete(address)
 		}
+		c.cache.Delete(address)
 	}
-	atomic.AddUint64(&r.missCount, 1)
-	return r.Lookup(address)
+	atomic.AddUint64(&c.missCount, 1)
+	return c.Lookup(address)
 }
 
-func (r *Resolver) FetchOne(address string) (net.IP, error) {
-	ips, err := r.Fetch(address)
-	if err != nil {
+func (c *Cache) FetchOne(address string) (net.IP, error) {
+	ips, err := c.Fetch(address)
+	if err != nil || len(ips) == 0 {
 		return nil, err
 	}
+
+	return ips[0], nil
+}
+
+func (c *Cache) FetchOneString(address string) (string, error) {
+	ip, err := c.FetchOne(address)
+	if err != nil || ip == nil {
+		return "", err
+	}
+
+	return ip.String(), nil
+}
+
+func (c *Cache) FetchOneV4(address string) (net.IP, error) {
+	ips, err := c.Fetch(address)
+	if err != nil || len(ips) == 0 {
+		return nil, err
+	}
+
 	// 确保返回的是ipv4地址
 	for _, ip := range ips {
 		if ip.To4() != nil {
@@ -108,25 +136,43 @@ func (r *Resolver) FetchOne(address string) (net.IP, error) {
 	return nil, errors.New("lookup ipv4 address failed")
 }
 
-func (r *Resolver) FetchOneString(address string) (string, error) {
-	ip, err := r.FetchOne(address)
-	if err != nil {
+func (c *Cache) FetchOneV4String(address string) (string, error) {
+	ip, err := c.FetchOneV4(address)
+	if err != nil || ip == nil {
 		return "", err
 	}
 
 	return ip.String(), nil
 }
 
-func (r *Resolver) Lookup(address string) ([]net.IP, error) {
-	var ips []net.IP
-	var err error
+func (c *Cache) FetchRandomOne(address string) (net.IP, error) {
+	ips, err := c.Fetch(address)
+	if err != nil || len(ips) == 0 {
+		return nil, err
+	}
 
-	if r.server != nil {
-		addrs, err := r.server.LookupIPAddr(context.Background(), address)
+	random := rand.Intn(len(ips))
+
+	return ips[random], nil
+}
+
+func (c *Cache) FetchRandomOneString(address string) (string, error) {
+	ip, err := c.FetchRandomOne(address)
+	if err != nil || ip == nil {
+		return "", err
+	}
+
+	return ip.String(), nil
+}
+
+func (c *Cache) Lookup(address string) (ips []net.IP, err error) {
+	if c.server != nil {
+		addrs, err := c.server.LookupIPAddr(context.Background(), address)
 		if err != nil {
-			r.Set(address, ips, err)
+			c.Set(address, ips, err)
 			return nil, err
 		}
+
 		ips = make([]net.IP, len(addrs))
 		for i, ia := range addrs {
 			ips[i] = ia.IP
@@ -134,63 +180,63 @@ func (r *Resolver) Lookup(address string) ([]net.IP, error) {
 	} else {
 		ips, err = net.LookupIP(address)
 		if err != nil {
-			r.Set(address, ips, err)
+			c.Set(address, ips, err)
 			return nil, err
 		}
 	}
 
-	r.Set(address, ips, nil)
+	c.Set(address, ips, nil)
 	return ips, nil
 }
 
-func (r *Resolver) Refresh() {
-	r.cache.Range(func(address, value interface{}) bool {
-		if time.Now().Sub(value.(*Value).updated) > r.ttl {
-			r.cache.Delete(address)
+func (c *Cache) DeleteExpired() {
+	c.cache.Range(func(address, value interface{}) bool {
+		if time.Now().Unix()-value.(*cachedValue).updated > c.expiration {
+			c.cache.Delete(address)
 		}
 		return true
 	})
 }
 
-func (r *Resolver) autoRefresh() {
-	ticker := time.NewTicker(time.Second)
+func (c *Cache) runJanitor() {
+	ticker := time.NewTicker(time.Second * 60)
 
 	for {
 		select {
-		case <-r.closed:
+		case <-c.closed:
 			ticker.Stop()
 			return
 		case <-ticker.C:
-			r.Refresh()
+			c.DeleteExpired()
 		}
 	}
 }
 
-func (r *Resolver) HitRate() int {
-	total := atomic.LoadUint64(&r.hitCount) + atomic.LoadUint64(&r.missCount)
+func (c *Cache) HitRate() int {
+	total := atomic.LoadUint64(&c.hitCount) + atomic.LoadUint64(&c.missCount)
 	if total > 0 {
-		return int(atomic.LoadUint64(&r.hitCount) * 100 / total)
+		return int(atomic.LoadUint64(&c.hitCount) * 100 / total)
 	}
 	return 0
 }
 
-func (r *Resolver) Flush() {
-	r.cache = sync.Map{}
-	r.hitCount = 0
-	r.missCount = 0
+func (c *Cache) Flush() {
+	c.cache = sync.Map{}
+	atomic.StoreUint64(&c.hitCount, 0)
+	atomic.StoreUint64(&c.missCount, 0)
 }
 
-// Dump successful cache
-func (r *Resolver) Dump(file string) error {
+// Dump cache
+func (c *Cache) Dump(file string) error {
 	var cache = map[string][]net.IP{}
-	r.cache.Range(func(address, value interface{}) bool {
-		if value.(*Value).err == nil {
-			cache[address.(string)] = value.(*Value).ips
+	c.cache.Range(func(address, value interface{}) bool {
+		if value.(*cachedValue).err == nil {
+			cache[address.(string)] = value.(*cachedValue).ips
 		}
 		return true
 	})
 
-	f, err := os.OpenFile(file, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	f, err := os.OpenFile(file, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
@@ -201,7 +247,7 @@ func (r *Resolver) Dump(file string) error {
 	return enc.Encode(cache)
 }
 
-func (r *Resolver) Load(file string) error {
+func (c *Cache) Load(file string) error {
 	f, err := os.Open(file)
 	if err != nil {
 		return err
@@ -217,14 +263,14 @@ func (r *Resolver) Load(file string) error {
 	}
 
 	for address, ips := range cache {
-		r.Set(address, ips, nil)
+		c.Set(address, ips, nil)
 	}
 	return nil
 }
 
-func (r *Resolver) Close() {
-	r.once.Do(func() {
-		close(r.closed)
-		r.Flush()
+func (c *Cache) Close() {
+	c.once.Do(func() {
+		close(c.closed)
+		c.Flush()
 	})
 }

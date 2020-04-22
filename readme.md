@@ -31,7 +31,7 @@ Please note that this feature is not available on Windows, https://golang.org/pk
 > On Windows, the resolver always uses C library functions, such as GetAddrInfo and DnsQuery.
 
 	//use 8.8.8.8 as your server
-	resolver := dnscache.NewCustomServer(time.Minute*5, "8.8.8.8:53")
+	resolver := dnscache.NewWithServer(time.Minute*5, "8.8.8.8:53")
 
 If you are using an `http.Transport`, you can use this cache by speficifying a
 `Dial` function:
